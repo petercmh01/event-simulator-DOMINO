@@ -304,3 +304,13 @@
   总包 ~/event_simulator/env_domino_docs.tar.gz。关键事实:官方仓库 H-EmbodVis/DOMINO
   (本地 commit 9c94f2d + 未提交改动);cuRobo=nvidia_curobo 0.7.8 editable 源码装于
   DOMINO/envs/curobo(PyPI 无);warp-lang 1.6.0 钉死;实测 scipy 1.15.3≠requirements 的 1.10.1
+- **push 准备(2026-10-18)**:event_simulator 初始化为 git 仓库(main 分支,1793 文件,
+  .git 108M);DOMINO 以纯文件并入(上游 SHA 9c94f2d3 记入 README);排除 rpg_esim/
+  curobo 源码/assets 素材/tar 包/日志;数据经用户裁定全量入库(改 DOMINO/.gitignore
+  注释掉上游的 data/*)。坑:.gitignore 不支持行内注释(# 只有行首才算),行尾写注释
+  会导致整条 pattern 失效(rpg_esim 误入库已修正);上游 .gitignore 的 data/* 优先于
+  根目录反向规则,必须改 DOMINO/.gitignore 本体。GitHub 推送:https:443 不通、ssh:22 通,
+  已生成 ed25519 密钥(~/.ssh/id_ed25519_github),待用户加公钥+给仓库地址后 push
+- **push 完成(2026-10-18,✅)**:github.com/petercmh01/event-simulator-DOMINO
+  首笔提交 10b9399(1793 文件,SSH:22 推送 26s);署名 petercmh01
+  <87956324+petercmh01@users.noreply.github.com>;SSH 私钥 ~/.ssh/id_ed25519_github
