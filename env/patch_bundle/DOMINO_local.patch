@@ -1,0 +1,268 @@
+diff --git a/envs/_base_task.py b/envs/_base_task.py
+index cc518dc..2bd1857 100644
+--- a/envs/_base_task.py
++++ b/envs/_base_task.py
+@@ -98,6 +98,7 @@ class Base_Task(gym.Env):
+ 
+         self.now_obs = {}
+         self.take_action_cnt = 0
++        self.event_cam_manager = None  # ESIM 事件相机管理器,在 _init_task_env_ 中创建
+         self.eval_video_path = kwags.get("eval_video_save_dir", None)
+ 
+         self.save_freq = kwags.get("save_freq")
+@@ -233,10 +234,18 @@ class Base_Task(gym.Env):
+         # give renderer to sapien sim
+         self.engine.set_renderer(self.renderer)
+ 
+-        sapien.render.set_camera_shader_dir("rt")
+-        sapien.render.set_ray_tracing_samples_per_pixel(32)
+-        sapien.render.set_ray_tracing_path_depth(8)
+-        sapien.render.set_ray_tracing_denoiser("oidn")
++        # DOMINO_SHADER_DIR: rt=路径追踪(可配 spp/depth/oidn), default/minimal/trivial=光栅化
++        _shader_dir = os.environ.get("DOMINO_SHADER_DIR", "default")
++        sapien.render.set_camera_shader_dir(_shader_dir)
++        if _shader_dir == "rt":
++            # rt 光追恢复 benchmark 原版 32spp+depth8(4spp 降载版 OIDN 时域不稳,画面闪烁;用户裁定回退)
++            sapien.render.set_ray_tracing_samples_per_pixel(
++                int(os.environ.get("DOMINO_RTD_SPP", "32"))
++            )
++            sapien.render.set_ray_tracing_path_depth(
++                int(os.environ.get("DOMINO_RTD_DEPTH", "8"))
++            )
++            sapien.render.set_ray_tracing_denoiser("oidn")
+ 
+         # declare sapien scene
+         scene_config = sapien.SceneConfig()
+@@ -255,6 +264,10 @@ class Base_Task(gym.Env):
+         self.scene.set_ambient_light(kwargs.get("ambient_light", [0.5, 0.5, 0.5]))
+         # default enable shadow unless specified otherwise
+         shadow = kwargs.get("shadow", True)
++        # 方案A(2026-10-18 定为默认):点光默认不投阴影(cubemap 6pass/盏,曾占 default 单路渲染 83% 耗时);
++        # 方向光阴影保留(地面接触阴影)。DOMINO_POINT_SHADOW=1 可恢复旧行为
++        point_shadow = shadow and os.environ.get("DOMINO_POINT_SHADOW", "0") == "1"
++        dir_shadow = shadow and os.environ.get("DOMINO_DIR_SHADOW", "1") == "1"
+         # default spotlight angle and intensity
+         direction_lights = kwargs.get("direction_lights", [[[0, 0.5, -1], [0.5, 0.5, 0.5]]])
+         self.direction_light_lst = []
+@@ -266,14 +279,21 @@ class Base_Task(gym.Env):
+                     np.random.rand(),
+                 ]
+             self.direction_light_lst.append(
+-                self.scene.add_directional_light(direction_light[0], direction_light[1], shadow=shadow))
++                self.scene.add_directional_light(direction_light[0], direction_light[1], shadow=dir_shadow))
+         # default point lights position and intensity
+         point_lights = kwargs.get("point_lights", [[[1, 0, 1.8], [1, 1, 1]], [[-1, 0, 1.8], [1, 1, 1]]])
+         self.point_light_lst = []
+         for point_light in point_lights:
+             if self.random_light:
+                 point_light[1] = [np.random.rand(), np.random.rand(), np.random.rand()]
+-            self.point_light_lst.append(self.scene.add_point_light(point_light[0], point_light[1], shadow=shadow))
++            self.point_light_lst.append(self.scene.add_point_light(point_light[0], point_light[1], shadow=point_shadow))
++        # 补光实验(2026-10-18):0.7/0.4 强度下过曝、冲掉方向光接触阴影、臂体仍发黑(材质问题,光照无解)
++        # 默认关闭;DOMINO_FILL_LIGHT=1 可再开
++        if os.environ.get("DOMINO_FILL_LIGHT", "0") == "1":
++            self.fill_light_lst = [
++                self.scene.add_point_light([0, -0.8, 1.5], [0.7, 0.7, 0.7], shadow=False),
++                self.scene.add_point_light([0.5, 0.3, 1.2], [0.4, 0.4, 0.4], shadow=False),
++            ]
+ 
+         # initialize viewer with camera position and orientation
+         if self.render_freq:
+@@ -773,6 +793,13 @@ class Base_Task(gym.Env):
+         self.scene.step()  # run a physical step
+         self.scene.update_render()  # sync pose from SAPIEN to renderer
+ 
++        # ESIM 事件相机(2026-10-18):DOMINO_EVENT_CAMERAS 非空时启用 250Hz 补渲 + 事件生成
++        from envs.event_camera import EventCameraManager
++
++        self.event_cam_manager = EventCameraManager(
++            self.cameras, os.environ.get("DOMINO_EVENT_CAMERAS", "")
++        )
++
+     # =========================================================== Sapien ===========================================================
+ 
+     def _update_render(self):
+@@ -868,6 +895,9 @@ class Base_Task(gym.Env):
+         if not self.save_data:
+             return
+ 
++        if self.event_cam_manager is not None:
++            self.event_cam_manager.step_boundary()  # 事件分 bin 与 RGB 帧(FRAME_IDX)一一对应
++
+         print("saving: episode = ", self.ep_num, " index = ", self.FRAME_IDX, end="\r")
+ 
+         if self.FRAME_IDX == 0:
+@@ -926,6 +956,10 @@ class Base_Task(gym.Env):
+ 
+         os.makedirs(f"{self.save_dir}/data", exist_ok=True)
+         process_folder_to_hdf5_video(cache_path, target_file_path, target_video_path)
++        if getattr(self, "event_cam_manager", None) is not None:
++            _sf = getattr(self, "save_freq", None)
++            _fdt = _sf * self.scene.get_timestep() if _sf else None
++            self.event_cam_manager.finalize(self.save_dir, self.ep_num, frame_dt=_fdt)
+ 
+     def remove_data_cache(self):
+         folder_path = f"{self.save_dir}/.cache/episode{self.ep_num}/"
+@@ -3792,6 +3826,10 @@ class Base_Task(gym.Env):
+             if not self.transient_event:
+                 self._update_transient_checks()
+ 
++            if self.event_cam_manager is not None:
++                self._update_render()  # 同步腕部相机位姿到渲染器
++                self.event_cam_manager.tick()  # 250Hz 补渲 + 事件推进
++
+             if self.render_freq and control_idx % self.render_freq == 0:
+                 self._update_render()
+                 self.viewer.render()
+@@ -3998,6 +4036,8 @@ class Base_Task(gym.Env):
+                 
+             self._update_render()
+                 
++            if self.event_cam_manager is not None:
++                self.event_cam_manager.tick()  # 250Hz 补渲+事件推进,须在 _update_render(腕部相机位姿同步)之后
+             if self.check_success():
+                 self.eval_success = True
+                 self.get_obs() # update obs
+diff --git a/envs/camera/camera.py b/envs/camera/camera.py
+index 46d960d..21ff5d2 100644
+--- a/envs/camera/camera.py
++++ b/envs/camera/camera.py
+@@ -73,6 +73,10 @@ class Camera:
+         self.static_camera_info_list = kwags["left_embodiment_config"]["static_camera_list"]
+         self.static_camera_num = len(self.static_camera_info_list)
+ 
++        # SSAA 抗锯齿(2026-10-18):相机按 ssaa 倍分辨率渲染,取图时降采样回原始分辨率。
++        # box filter(avg_pool)等价 SSAA resolve;内参同步缩放,数据格式(320x240)不变。DOMINO_SSAA=1 关闭
++        self.ssaa = max(1, int(os.environ.get("DOMINO_SSAA", "2")))
++
+     def load_camera(self, scene):
+         """
+         Add cameras and set camera parameters
+@@ -111,8 +115,8 @@ class Camera:
+ 
+             camera = scene.add_camera(
+                 name=camera_info["name"],
+-                width=camera_config["w"],
+-                height=camera_config["h"],
++                width=camera_config["w"] * self.ssaa,
++                height=camera_config["h"] * self.ssaa,
+                 fovy=np.deg2rad(camera_config["fovy"]),
+                 near=near,
+                 far=far,
+@@ -134,8 +138,8 @@ class Camera:
+             wrist_camera_config = camera_args[self.wrist_camera_type]
+             self.left_camera = scene.add_camera(
+                 name="left_camera",
+-                width=wrist_camera_config["w"],
+-                height=wrist_camera_config["h"],
++                width=wrist_camera_config["w"] * self.ssaa,
++                height=wrist_camera_config["h"] * self.ssaa,
+                 fovy=np.deg2rad(wrist_camera_config["fovy"]),
+                 near=near,
+                 far=far,
+@@ -143,8 +147,8 @@ class Camera:
+ 
+             self.right_camera = scene.add_camera(
+                 name="right_camera",
+-                width=wrist_camera_config["w"],
+-                height=wrist_camera_config["h"],
++                width=wrist_camera_config["w"] * self.ssaa,
++                height=wrist_camera_config["h"] * self.ssaa,
+                 fovy=np.deg2rad(wrist_camera_config["fovy"]),
+                 near=near,
+                 far=far,
+@@ -297,6 +301,12 @@ class Camera:
+ 
+         def _get_config(camera):
+             camera_intrinsic_cv = camera.get_intrinsic_matrix()
++            if self.ssaa > 1:
++                camera_intrinsic_cv = camera_intrinsic_cv.copy()
++                camera_intrinsic_cv[0, 0] /= self.ssaa  # fx
++                camera_intrinsic_cv[1, 1] /= self.ssaa  # fy
++                camera_intrinsic_cv[0, 2] /= self.ssaa  # cx
++                camera_intrinsic_cv[1, 2] /= self.ssaa  # cy
+             camera_extrinsic_cv = camera.get_extrinsic_matrix()
+             camera_model_matrix = camera.get_model_matrix()
+             return {
+@@ -332,8 +342,13 @@ class Camera:
+     def get_rgba(self) -> dict:
+ 
+         def _get_rgba(camera):
+-            camera_rgba = camera.get_picture("Color")
+-            camera_rgba_img = (camera_rgba * 255).clip(0, 255).astype("uint8")
++            camera_rgba = camera.get_picture_cuda("Color").torch()  # [H, W, 4] float32 on GPU
++            if self.ssaa > 1:
++                f = self.ssaa
++                camera_rgba = torch.nn.functional.avg_pool2d(
++                    camera_rgba.permute(2, 0, 1).unsqueeze(0), f
++                ).squeeze(0).permute(1, 2, 0)
++            camera_rgba_img = (camera_rgba * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
+             return camera_rgba_img
+ 
+         # ================================= sensor camera =================================
+@@ -385,6 +400,12 @@ class Camera:
+                 label0_image = seg_labels[..., 0].astype(np.uint8)  # mesh-level
+             elif level == "actor":
+                 label0_image = seg_labels[..., 1].astype(np.uint8)  # actor-level
++            if self.ssaa > 1:
++                f = self.ssaa
++                label0_image = cv2.resize(
++                    label0_image, (label0_image.shape[1] // f, label0_image.shape[0] // f),
++                    interpolation=cv2.INTER_NEAREST,
++                )
+             return color_palette[label0_image]
+ 
+         res = {
+@@ -415,6 +436,12 @@ class Camera:
+             position = camera.get_picture("Position")
+             depth = -position[..., 2]
+             depth_image = (depth * 1000.0).astype(np.float64)
++            if self.ssaa > 1:
++                f = self.ssaa
++                depth_image = cv2.resize(
++                    depth_image, (depth_image.shape[1] // f, depth_image.shape[0] // f),
++                    interpolation=cv2.INTER_NEAREST,
++                )
+             return depth_image
+ 
+         def _get_sensor_depth(sensor):
+diff --git a/envs/utils/pkl2hdf5.py b/envs/utils/pkl2hdf5.py
+index fcb2df7..d0525a1 100644
+--- a/envs/utils/pkl2hdf5.py
++++ b/envs/utils/pkl2hdf5.py
+@@ -80,6 +80,15 @@ def pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path):
+ 
+     images_to_video(np.array(data_list["observation"]["head_camera"]["rgb"]), out_path=video_path)
+ 
++    # 多相机 RGB 视频(2026-10-18):head_camera 之外的相机各出一版 <episodeK>_<name>.mp4,便于事件/RGB 对照
++    video_dir = os.path.dirname(video_path)
++    ep_stem = os.path.basename(video_path)[:-4]  # episode{K}
++    for cam_name, cam_data in data_list["observation"].items():
++        if cam_name == "head_camera" or not isinstance(cam_data, dict) or "rgb" not in cam_data:
++            continue
++        images_to_video(np.array(cam_data["rgb"]),
++                        out_path=os.path.join(video_dir, f"{ep_stem}_{cam_name}.mp4"))
++
+     with h5py.File(hdf5_path, "w") as f:
+         create_hdf5_from_dict(f, data_list)
+ 
+diff --git a/script/collect_data.py b/script/collect_data.py
+index a13e95c..f103857 100644
+--- a/script/collect_data.py
++++ b/script/collect_data.py
+@@ -162,6 +162,7 @@ def run(TASK_ENV, args):
+                 print(" -------------")
+                 print(f"simulate data episode {suc_num} fail! (seed = {epid})")
+                 print("Error: ", e)
++                traceback.print_exc()
+                 print(" -------------")
+                 fail_num += 1
+                 TASK_ENV.close_env()
+@@ -174,6 +175,7 @@ def run(TASK_ENV, args):
+                 print(" -------------")
+                 print(f"simulate data episode {suc_num} fail! (seed = {epid})")
+                 print("Error: ", e)
++                traceback.print_exc()
+                 print(" -------------")
+                 fail_num += 1
+                 TASK_ENV.close_env()

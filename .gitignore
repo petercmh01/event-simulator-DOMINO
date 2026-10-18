@@ -1,0 +1,17 @@
+# 第三方参考/依赖(不进仓库)
+rpg_esim/
+DOMINO/envs/curobo/
+DOMINO/assets/
+
+# 打包产物(内容与仓库内文件重复)
+*.tar.gz
+
+# git/缓存
+__pycache__/
+*.pyc
+.cache/
+.ipynb_checkpoints/
+
+# 系统
+.DS_Store
+*.log

@@ -1,0 +1,24 @@
+{
+    "episode_0": {
+        "cluttered_table_info": [],
+        "texture_info": {
+            "wall_texture": null,
+            "table_texture": null
+        },
+        "info": {
+            "{A}": "050_bell/base0",
+            "{a}": "left"
+        }
+    },
+    "episode_1": {
+        "cluttered_table_info": [],
+        "texture_info": {
+            "wall_texture": null,
+            "table_texture": null
+        },
+        "info": {
+            "{A}": "050_bell/base1",
+            "{a}": "right"
+        }
+    }
+}

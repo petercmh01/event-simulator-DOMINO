@@ -1,0 +1,42 @@
+# DOMINO 事件相机仿真环境 · 精编版(2026-10-18 导出)
+# 用途:跨机器重建的核心锚点。完整 363 个 pip 包见 environment_domino_full.yml
+# (那个文件可直接 `conda env create -f` 精确还原;本文件用于理解依赖结构)。
+# 重要:不要用本文件直接 conda env create——它不含全部依赖,重建请按
+# 《环境重建指南.md》操作(本文件是它的机器可读摘要)。
+name: domino
+channels:
+  - defaults
+dependencies:
+  - python=3.10.22        # 锚点:DOMINO/sapien 3.0b1 均按 3.10 验证
+  - pip
+  - pip:
+      # ===== 核心渲染/仿真(版本不可漂移)=====
+      - sapien==3.0.0b1           # 物理+Vulkan 渲染器;beta 版,PyPI 有 wheel
+      - mplib==0.2.1              # 运动规划(TOPP);装完须打 planner.py 补丁(见指南步骤2)
+      - warp-lang==1.6.0          # 【钉死】cuRobo 依赖;>1.6 版本曾引入不兼容,勿升级
+      # ===== 深度学习/GPU =====
+      - torch==2.4.1              # +cu121 wheel(download.pytorch.org/whl/cu121)
+      - torchvision==0.19.1       # 与 torch 2.4.1 配套
+      # ===== DOMINO requirements.txt 关键项(实际安装版本)=====
+      - transforms3d==0.4.2
+      - scipy==1.15.3             # 注意:requirements.txt 写的是 1.10.1,环境实测 1.15.3,以本文件为准
+      - gymnasium==0.29.1
+      - trimesh==4.4.3
+      - open3d==0.18.0
+      - imageio==2.34.2
+      - imageio-ffmpeg==0.6.0
+      - huggingface-hub==0.25.0
+      - h5py==3.16.0
+      - pyglet==1.5.31            # 要求 <2
+      - zarr==2.18.3
+      - moviepy==2.2.1
+      - wandb==0.31.0
+      - termcolor==3.3.0
+      - av==17.1.0
+      - matplotlib==3.10.9
+      # ===== 事件相机管线新增(2026-10-18)=====
+      - opencv-python==4.11.0.86  # 事件视频/DIS 光流预留
+      - numpy==1.26.4             # 注意:numpy 勿升 2.x,sapien 3.0b1 配套 1.26
+      - nvidia-curobo==0.7.8      # ⚠ 此行仅记录版本;实际为 DOMINO/envs/curobo 源码 editable 安装,见指南步骤3
+      # pytorch3d:未安装(官方 _install.sh 会装,但 DOMINO 有缺失回退,
+      # 只打 "missing pytorch3d" warning,pcd 降采样走 CPU,功能无损;重建时可跳过)
